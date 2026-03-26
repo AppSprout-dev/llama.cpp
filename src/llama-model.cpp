@@ -2563,6 +2563,17 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     default: type = LLM_TYPE_UNKNOWN;
                 }
             } break;
+        case LLM_ARCH_FELIX:
+            {
+                ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
+                ml.get_key(LLM_KV_SPOKE_COUNT, hparams.n_spokes);
+                ml.get_key(LLM_KV_SPOKE_RANK,  hparams.spoke_rank);
+
+                switch (hparams.n_layer) {
+                    case 20: type = LLM_TYPE_UNKNOWN; break; // 100M
+                    default: type = LLM_TYPE_UNKNOWN;
+                }
+            } break;
         default: throw std::runtime_error("unsupported model architecture: " + arch_name());
     }
 
@@ -7127,6 +7138,47 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.visexp_ffn_up   = create_tensor(tn(LLM_TENSOR_VISEXP_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
                     }
                 } break;
+            case LLM_ARCH_FELIX:
+                {
+                    tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
+
+                    // output
+                    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
+                    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
+
+                    if (output == NULL) {
+                        output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
+                    }
+
+                    const int64_t n_spoke      = hparams.n_spokes;
+                    const int64_t spoke_rank_i  = hparams.spoke_rank;
+
+                    for (int i = 0; i < n_layer; ++i) {
+                        auto & layer = layers[i];
+
+                        // hub: standard LLaMA attention
+                        layer.attn_norm = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, 0);
+                        layer.wq = create_tensor(tn(LLM_TENSOR_ATTN_Q,   "weight", i), {n_embd, n_embd_head_k * n_head}, 0);
+                        layer.wk = create_tensor(tn(LLM_TENSOR_ATTN_K,   "weight", i), {n_embd, n_embd_k_gqa}, 0);
+                        layer.wv = create_tensor(tn(LLM_TENSOR_ATTN_V,   "weight", i), {n_embd, n_embd_v_gqa}, 0);
+                        layer.wo = create_tensor(tn(LLM_TENSOR_ATTN_OUT, "weight", i), {n_embd_head_k * n_head, n_embd}, 0);
+
+                        // hub: standard SwiGLU FFN
+                        layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, 0);
+                        layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd, n_ff}, 0);
+                        layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
+                        layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd, n_ff}, 0);
+
+                        // spoke: gated low-rank projections
+                        layer.spoke_norm      = create_tensor(tn(LLM_TENSOR_SPOKE_NORM, "weight", i), {n_embd}, 0);
+                        layer.spoke_gate_bias = create_tensor(tn(LLM_TENSOR_SPOKE_GATE, "gate_bias", i), {1}, 0);
+
+                        for (int s = 0; s < (int) n_spoke; ++s) {
+                            layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
+                            layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                        }
+                    }
+                } break;
             case LLM_ARCH_PANGU_EMBED:
                 {
                     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
@@ -8726,6 +8778,10 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
             {
                 llm = std::make_unique<llm_build_step35_iswa>(*this, params);
             } break;
+        case LLM_ARCH_FELIX:
+            {
+                llm = std::make_unique<llm_build_felix>(*this, params);
+            } break;
         default:
             GGML_ABORT("fatal error");
     }
@@ -8883,6 +8939,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_LLADA:
         case LLM_ARCH_LLAMA4:
         case LLM_ARCH_DECI:
+        case LLM_ARCH_FELIX:
         case LLM_ARCH_BAICHUAN:
         case LLM_ARCH_STARCODER:
         case LLM_ARCH_INTERNLM2:

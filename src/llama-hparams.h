@@ -92,6 +92,10 @@ struct llama_hparams {
     uint32_t moe_latent_size      = 0;
     uint32_t nextn_predict_layers = 0;
 
+    // felix spokes
+    uint32_t n_spokes    = 0;
+    uint32_t spoke_rank  = 0;
+
     float f_norm_eps;
     float f_norm_rms_eps;
     float f_norm_group_eps;

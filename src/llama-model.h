@@ -455,6 +455,12 @@ struct llama_layer {
     struct ggml_tensor * ssm_g_b    = nullptr;
     struct ggml_tensor * ssm_o_norm = nullptr;
 
+    // felix spokes
+    struct ggml_tensor * spoke_norm       = nullptr;
+    struct ggml_tensor * spoke_gate_bias  = nullptr;
+    struct ggml_tensor * spoke_w_down[4]  = {nullptr, nullptr, nullptr, nullptr};
+    struct ggml_tensor * spoke_w_up[4]    = {nullptr, nullptr, nullptr, nullptr};
+
     // DSA (deepseek sparse attention)
     struct ggml_tensor * indexer_k_norm   = nullptr;
     struct ggml_tensor * indexer_k_norm_b = nullptr;
