@@ -2421,6 +2421,10 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     }
                 }
 
+                // Optional spoke adapter (Felix-LM architecture)
+                ml.get_key(LLM_KV_SPOKE_COUNT, hparams.n_spokes, false);
+                ml.get_key(LLM_KV_SPOKE_RANK,  hparams.spoke_rank, false);
+
                 switch (hparams.n_layer) {
                     case 24: type = hparams.n_embd == 1024 ? LLM_TYPE_0_8B : LLM_TYPE_2B; break;
                     case 32: type = hparams.n_embd == 2560 ? LLM_TYPE_4B : LLM_TYPE_9B; break;
@@ -7420,6 +7424,21 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, 0);
                         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, 0);
                         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, 0);
+
+                        // Optional spoke adapter (Felix-LM architecture)
+                        const uint32_t n_spoke = hparams.n_spokes;
+                        const uint32_t spoke_rank_i = hparams.spoke_rank;
+                        if (n_spoke > 0) {
+                            layer.spoke_norm      = create_tensor(tn(LLM_TENSOR_SPOKE_NORM,   "weight",    i), {n_embd}, TENSOR_NOT_REQUIRED);
+                            layer.spoke_gate_bias = create_tensor(tn(LLM_TENSOR_SPOKE_GATE,   "gate_bias", i), {1},      TENSOR_NOT_REQUIRED);
+
+                            if (layer.spoke_norm) {
+                                for (int s = 0; s < (int) n_spoke; ++s) {
+                                    layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
+                                    layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                                }
+                            }
+                        }
                     }
                 } break;
             case LLM_ARCH_MIMO2:

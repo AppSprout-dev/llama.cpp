@@ -64,6 +64,38 @@ llm_build_qwen35::llm_build_qwen35(const llama_model & model, const llm_graph_pa
         cur = ggml_add(ctx0, cur, ffn_residual);
         cb(cur, "post_ffn", il);
 
+        // --- Optional spoke: gated low-rank projections (Felix-LM adapter) ---
+        if (model.layers[il].spoke_norm) {
+            const int n_spokes = hparams.n_spokes;
+
+            // RMSNorm the hidden state for spoke input
+            ggml_tensor * h_norm = build_norm(cur,
+                    model.layers[il].spoke_norm, nullptr,
+                    LLM_NORM_RMS, il);
+            cb(h_norm, "spoke_norm", il);
+
+            // Compute spoke projections: SiLU(h_norm @ w_down) @ w_up, then mean
+            ggml_tensor * spoke_sum = nullptr;
+            for (int s = 0; s < n_spokes; ++s) {
+                ggml_tensor * down = ggml_mul_mat(ctx0, model.layers[il].spoke_w_down[s], h_norm);
+                ggml_tensor * act  = ggml_silu(ctx0, down);
+                ggml_tensor * up   = ggml_mul_mat(ctx0, model.layers[il].spoke_w_up[s], act);
+
+                spoke_sum = spoke_sum ? ggml_add(ctx0, spoke_sum, up) : up;
+            }
+
+            // Mean over spokes
+            ggml_tensor * spoke_mean = ggml_scale(ctx0, spoke_sum, 1.0f / n_spokes);
+
+            // Gated residual: h = h + sigmoid(gate_bias) * mean_update
+            ggml_tensor * gate_f32 = ggml_cast(ctx0, model.layers[il].spoke_gate_bias, GGML_TYPE_F32);
+            ggml_tensor * gate_s = ggml_sigmoid(ctx0, gate_f32);
+            ggml_tensor * gated = ggml_mul(ctx0, spoke_mean, ggml_repeat(ctx0, gate_s, spoke_mean));
+
+            cur = ggml_add(ctx0, cur, gated);
+            cb(cur, "spoke_out", il);
+        }
+
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);
 
