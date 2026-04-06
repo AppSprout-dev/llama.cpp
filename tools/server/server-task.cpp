@@ -1,4 +1,5 @@
 #include "server-task.h"
+#include "server-turboquant.h"
 
 #include "chat.h"
 #include "common.h"
@@ -2040,8 +2041,25 @@ bool server_prompt_cache::load(server_prompt & prompt, const server_tokens & tok
     if (it_best != states.end()) {
         SRV_WRN(" - found better prompt with f_keep = %.3f, sim = %.3f\n", f_keep_best, sim_best);
 
-        const size_t size = it_best->data.size();
-        const size_t n = llama_state_seq_set_data_ext(ctx, it_best->data.data(), size, id_slot, 0);
+        // TurboQuant: decompress if the cached state is compressed
+        std::vector<uint8_t> decompressed_buf;
+        const uint8_t * state_data = it_best->data.data();
+        size_t state_size = it_best->data.size();
+
+        if (turboquant_is_compressed(state_data, state_size)) {
+            if (!turboquant_decompress(state_data, state_size, decompressed_buf)) {
+                SRV_WRN("%s", "TurboQuant: failed to decompress cached state\n");
+                return false;
+            }
+            SRV_WRN(" - TurboQuant: decompressed %.3f MiB -> %.3f MiB\n",
+                    state_size / (1024.0 * 1024.0),
+                    decompressed_buf.size() / (1024.0 * 1024.0));
+            state_data = decompressed_buf.data();
+            state_size = decompressed_buf.size();
+        }
+
+        const size_t size = state_size;
+        const size_t n = llama_state_seq_set_data_ext(ctx, state_data, size, id_slot, 0);
         if (n != size) {
             SRV_WRN("failed to restore state with size %zu\n", size);
 

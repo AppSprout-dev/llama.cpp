@@ -13,6 +13,8 @@ add_library(${TARGET} STATIC
     server-common.h
     server-context.cpp
     server-context.h
+    server-turboquant.cpp
+    server-turboquant.h
 )
 
 if (BUILD_SHARED_LIBS)

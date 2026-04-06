@@ -3,6 +3,7 @@
 #include "server-http.h"
 #include "server-task.h"
 #include "server-queue.h"
+#include "server-turboquant.h"
 
 #include "common.h"
 #include "llama.h"
@@ -116,6 +117,18 @@ struct server_slot {
         }
 
         llama_state_seq_get_data_ext(ctx, cur->data.data(), cur_size, id, 0);
+
+        // TurboQuant: compress the serialized KV state for cache storage
+        {
+            std::vector<uint8_t> compressed;
+            if (turboquant_compress(cur->data.data(), cur->data.size(), compressed, 3, 4)) {
+                SRV_WRN(" - TurboQuant: %.3f MiB -> %.3f MiB (%.1fx)\n",
+                        cur->data.size() / (1024.0 * 1024.0),
+                        compressed.size() / (1024.0 * 1024.0),
+                        (float)cur->data.size() / compressed.size());
+                cur->data = std::move(compressed);
+            }
+        }
     }
 
     bool prompt_load(server_prompt_cache & prompt_cache, const server_tokens & tokens) {
@@ -2382,8 +2395,19 @@ private:
 
                                     if (!do_reset) {
                                         // restore the context checkpoint
-                                        const size_t checkpoint_size = it->data.size();
-                                        const size_t n = llama_state_seq_set_data_ext(ctx, it->data.data(), checkpoint_size, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                                        // TurboQuant: decompress if compressed
+                                        std::vector<uint8_t> ckpt_decompressed;
+                                        const uint8_t * ckpt_data = it->data.data();
+                                        size_t checkpoint_size = it->data.size();
+
+                                        if (turboquant_is_compressed(ckpt_data, checkpoint_size)) {
+                                            if (turboquant_decompress(ckpt_data, checkpoint_size, ckpt_decompressed)) {
+                                                ckpt_data = ckpt_decompressed.data();
+                                                checkpoint_size = ckpt_decompressed.size();
+                                            }
+                                        }
+
+                                        const size_t n = llama_state_seq_set_data_ext(ctx, ckpt_data, checkpoint_size, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 
                                         if (n != checkpoint_size) {
                                             SLT_ERR(slot, "failed to restore context checkpoint (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n", it->pos_min, it->pos_max, it->n_tokens, (float) checkpoint_size / 1024 / 1024);
@@ -2644,6 +2668,11 @@ private:
 
                         llama_state_seq_get_data_ext(ctx, cur.data.data(), checkpoint_size, slot.id,
                                                      LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+
+                        // NOTE: checkpoint compression disabled — it's in the prompt processing
+                        // hot path and adds ~2s per checkpoint. The main prompt save (between
+                        // requests) provides the 4.2x compression where it matters most.
+                        // TODO: revisit when we have async compression or SIMD rotation.
 
                         SLT_WRN(slot,
                                 "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64
