@@ -1063,6 +1063,11 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
                 LLM_TENSOR_SSM_ALPHA,
                 LLM_TENSOR_SSM_NORM,
                 LLM_TENSOR_SSM_OUT,
+                // felix spoke tensors
+                LLM_TENSOR_SPOKE_NORM,
+                LLM_TENSOR_SPOKE_GATE,
+                LLM_TENSOR_SPOKE_W_DOWN,
+                LLM_TENSOR_SPOKE_W_UP,
             };
         case LLM_ARCH_QWEN35MOE:
             return {
