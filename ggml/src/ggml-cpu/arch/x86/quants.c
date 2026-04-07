@@ -3818,3 +3818,13 @@ void ggml_vec_dot_iq4_xs_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const v
     ggml_vec_dot_iq4_xs_q8_K_generic(n, s, bs, vx, bx, vy, by, nrc);
 #endif
 }
+
+// RQ4: no x86-optimized version yet, delegate to generic
+void ggml_vec_dot_rq4_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_rq4_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
+}
+
+// RQ3: no x86-optimized version yet, delegate to generic
+void ggml_vec_dot_rq3_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    ggml_vec_dot_rq3_q8_0_generic(n, s, bs, vx, bx, vy, by, nrc);
+}

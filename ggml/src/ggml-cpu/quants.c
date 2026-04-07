@@ -1223,6 +1223,87 @@ void ggml_vec_dot_iq4_nl_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs,
     *s = sumf;
 }
 
+// RotorQ RQ4 vec_dot: float codebook dot product with Q8_0 activations.
+// Uses rq4_codebook float table from ggml-quants.c since kvalues_rq4 int8
+// has different magnitudes (int8/127 != Beta centroids).
+static const float rq4_codebook_cpu[16] = {
+    -0.12281943f, -0.08296703f, -0.06342665f, -0.04873108f,
+    -0.03634204f, -0.02524078f, -0.01488395f, -0.00492020f,
+     0.00492020f,  0.01488395f,  0.02524078f,  0.03634204f,
+     0.04873108f,  0.06342665f,  0.08296703f,  0.12281943f,
+};
+
+void ggml_vec_dot_rq4_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+    assert(n % QK_RQ4 == 0);
+
+    const block_rq4  * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_RQ4;
+
+    float sumf = 0;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const float d = GGML_CPU_FP16_TO_FP32(x[ib].d) * GGML_CPU_FP16_TO_FP32(y[ib].d);
+        float sumi = 0;
+        for (int j = 0; j < QK_RQ4/2; ++j) {
+            sumi += rq4_codebook_cpu[x[ib].qs[j] & 0xf]  * y[ib].qs[j*2 + 0];
+            sumi += rq4_codebook_cpu[x[ib].qs[j] >>  4]   * y[ib].qs[j*2 + 1];
+        }
+        sumf += d * sumi;
+    }
+    *s = sumf;
+}
+
+// RotorQ RQ3 vec_dot: float codebook dot product with Q8_0 activations.
+// 3-bit packed indices, 8 centroids from Beta(127.5, 127.5).
+static const float rq3_codebook_cpu[8] = {
+    -0.10289294f, -0.05607887f, -0.03079141f, -0.00990207f,
+     0.00990207f,  0.03079141f,  0.05607887f,  0.10289294f,
+};
+
+static inline uint8_t rq3_get_index_cpu(const uint8_t * qs, int i) {
+    const int bit_off = i * 3;
+    const int byte_off = bit_off >> 3;
+    const int shift = bit_off & 7;
+    if (shift <= 5) {
+        return (qs[byte_off] >> shift) & 0x7;
+    }
+    return ((qs[byte_off] >> shift) | (qs[byte_off + 1] << (8 - shift))) & 0x7;
+}
+
+void ggml_vec_dot_rq3_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+    assert(n % QK_RQ3 == 0);
+
+    const block_rq3  * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_RQ3;
+
+    float sumf = 0;
+
+    for (int ib = 0; ib < nb; ++ib) {
+        const float d = GGML_CPU_FP16_TO_FP32(x[ib].d) * GGML_CPU_FP16_TO_FP32(y[ib].d);
+        float sumi = 0;
+        for (int j = 0; j < QK_RQ3; ++j) {
+            const uint8_t idx = rq3_get_index_cpu(x[ib].qs, j);
+            sumi += rq3_codebook_cpu[idx] * y[ib].qs[j];
+        }
+        sumf += d * sumi;
+    }
+    *s = sumf;
+}
+
 void ggml_vec_dot_iq4_xs_q8_K_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     assert(nrc == 1);
     UNUSED(nrc);

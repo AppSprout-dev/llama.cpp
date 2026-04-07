@@ -194,6 +194,21 @@ typedef struct {
 } block_rq4;
 static_assert(sizeof(block_rq4) == sizeof(ggml_half) + QK_RQ4 / 2, "wrong rq4 block size/padding");
 
+// RotorQ 3-bit: Beta codebook with 8 centroids, 3 bits per index
+// 32 weights × 3 bits = 96 bits = 12 bytes of packed indices
+// Packing: indices stored in bit-packed order, index i starts at bit i*3
+// To extract index i: byte_off = (i*3)/8, bit_off = (i*3)%8
+//   val = (qs[byte_off] >> bit_off) & 0x7   (if bit_off <= 5)
+//   val = ((qs[byte_off] >> bit_off) | (qs[byte_off+1] << (8-bit_off))) & 0x7  (if bit_off > 5)
+#define QK_RQ3 32
+#define QI_RQ3 (QK_RQ3 / (4 * 2))  // same grouping as RQ4 for mmvq dispatch
+#define QR_RQ3 2
+typedef struct {
+    ggml_half d;               // block scale (2 bytes)
+    uint8_t qs[12];            // 3-bit packed indices, 32 × 3 = 96 bits = 12 bytes
+} block_rq3;
+static_assert(sizeof(block_rq3) == sizeof(ggml_half) + 12, "wrong rq3 block size/padding");
+
 #define QK4_0 32
 typedef struct {
     ggml_half d;           // delta
@@ -1127,6 +1142,26 @@ GGML_TABLE_END()
 // RotorQ 4-bit codebook: TurboQuant Beta((255)/2,(255)/2) optimal centroids
 GGML_TABLE_BEGIN(int8_t, kvalues_rq4, 16)
     -127, -86, -66, -50, -38, -26, -15, -5, 5, 15, 26, 38, 50, 66, 86, 127,
+GGML_TABLE_END()
+
+// RotorQ 4-bit float codebook: same centroids as rq4_codebook in ggml-quants.c
+// Used by GPU dequant kernel (kvalues_rq4 int8 table is for dp4a paths only)
+GGML_TABLE_BEGIN(float, rq4_codebook_gpu, 16)
+    -0.12281943f, -0.08296703f, -0.06342665f, -0.04873108f,
+    -0.03634204f, -0.02524078f, -0.01488395f, -0.00492020f,
+     0.00492020f,  0.01488395f,  0.02524078f,  0.03634204f,
+     0.04873108f,  0.06342665f,  0.08296703f,  0.12281943f,
+GGML_TABLE_END()
+
+// RotorQ 3-bit codebook: 8 centroids from Beta(127.5, 127.5) on [-1,1], dim=256
+GGML_TABLE_BEGIN(int8_t, kvalues_rq3, 8)
+    -127, -69, -38, -12, 12, 38, 69, 127,
+GGML_TABLE_END()
+
+// RQ3 float codebook for GPU dequant
+GGML_TABLE_BEGIN(float, rq3_codebook_gpu, 8)
+    -0.10289294f, -0.05607887f, -0.03079141f, -0.00990207f,
+     0.00990207f,  0.03079141f,  0.05607887f,  0.10289294f,
 GGML_TABLE_END()
 
 // e2m1 values (doubled)

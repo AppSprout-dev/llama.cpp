@@ -2809,9 +2809,9 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
         const block_rq4 * bxi = (const block_rq4 *) x + kbx0 + i*stride + kbxd;
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_df[i*MMQ_MMA_TILE_X_K_Q8_0             + kbxd] = __half2float(bxi->d);
+        x_df[i*MMQ_MMA_TILE_X_K_Q8_0             + kbxd] = __half2float(bxi->d) / 127.0f;
 #else
-        x_df[i*(MMQ_TILE_NE_K/QI_RQ4) + i/QI_RQ4 + kbxd] = __half2float(bxi->d);
+        x_df[i*(MMQ_TILE_NE_K/QI_RQ4) + i/QI_RQ4 + kbxd] = __half2float(bxi->d) / 127.0f;
 #endif
     }
 }

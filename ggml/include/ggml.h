@@ -430,7 +430,8 @@ extern "C" {
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_RQ4     = 42, // RotorQ 4-bit: TurboQuant codebook + rotation
-        GGML_TYPE_COUNT   = 43,
+        GGML_TYPE_RQ3     = 43, // RotorQ 3-bit: TurboQuant codebook, 3.5 BPW
+        GGML_TYPE_COUNT   = 44,
     };
 
     // precision

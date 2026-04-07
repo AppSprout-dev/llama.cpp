@@ -1243,24 +1243,78 @@ static __device__ __forceinline__ float vec_dot_iq4_nl_q8_1(
 #define VDR_RQ4_Q8_1_MMVQ 2
 #define VDR_RQ4_Q8_1_MMQ  4
 
+#define VDR_RQ3_Q8_1_MMVQ 2
+#define VDR_RQ3_Q8_1_MMQ  4
+
 static __device__ __forceinline__ float vec_dot_rq4_q8_1(
     const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
 
     const block_rq4 * bq4 = (const block_rq4 *) vbq + kbx;
 
-    const int * q8 = (const int *) bq8_1->qs + iqs;
+    // RQ4 packs consecutive pairs: byte j = (element_{2j+1} << 4) | element_{2j}
+    // kvalues_rq4 int8 codebook = round(rq4_codebook_float * 127 / max_cb_val)
+    // dp4a integer path with byte interleaving for consecutive-pair nibble ordering.
+    // Scale factor: rq4_codebook[15] / 127 = 0.12281943 / 127 = 9.6708e-4
 
     int sumi = 0;
+
 #pragma unroll
-    for (int l = 0; l < VDR_Q4_0_Q8_1_MMVQ; ++l) {
+    for (int l = 0; l < VDR_RQ4_Q8_1_MMVQ; ++l) {
         const int aux_q4 = get_int_b2(bq4->qs, iqs + l);
         const int2 v = get_int_from_table_16(aux_q4, kvalues_rq4);
 
-        sumi = ggml_cuda_dp4a(v.x, q8[l + 0], sumi);
-        sumi = ggml_cuda_dp4a(v.y, q8[l + 4], sumi);
+        // v.x has codebook values for even elements [0,2,4,6], v.y for odd [1,3,5,7]
+        // Interleave to get consecutive elements for dp4a pairing with Q8_1
+#if defined(GGML_USE_HIP)
+        const int v_lo = __builtin_amdgcn_perm(v.y, v.x, 0x05010400);  // [elem_0, elem_1, elem_2, elem_3]
+        const int v_hi = __builtin_amdgcn_perm(v.y, v.x, 0x07030602);  // [elem_4, elem_5, elem_6, elem_7]
+#else
+        // Portable interleave: [a0,b0,a1,b1] from a=v.x=[a0,a1,a2,a3], b=v.y=[b0,b1,b2,b3]
+        const int v_lo = (v.x & 0xFF) | ((v.y & 0xFF) << 8) | ((v.x & 0xFF00) << 8) | ((v.y & 0xFF00) << 16);
+        const int v_hi = ((v.x >> 16) & 0xFF) | (((v.y >> 16) & 0xFF) << 8) | (((v.x >> 24) & 0xFF) << 16) | (v.y & 0xFF000000u);
+#endif
+
+        // Read Q8_1 at consecutive positions (not Q4_0-style split lo/hi groups)
+        const int u_lo = get_int_b4(bq8_1->qs, (iqs + l) * 2 + 0);
+        const int u_hi = get_int_b4(bq8_1->qs, (iqs + l) * 2 + 1);
+
+        sumi = ggml_cuda_dp4a(v_lo, u_lo, sumi);
+        sumi = ggml_cuda_dp4a(v_hi, u_hi, sumi);
     }
 
     const float d = __half2float(bq4->d) * __low2float(bq8_1->ds);
+    return d * (0.12281943f / 127.0f) * sumi;
+}
+
+// RQ3: float codebook vec_dot with 3-bit packed indices
+static inline __device__ uint8_t rq3_extract(const uint8_t * qs, int i) {
+    int bit_off = i * 3;
+    int byte_off = bit_off >> 3;
+    int shift = bit_off & 7;
+    if (shift <= 5) return (qs[byte_off] >> shift) & 0x7;
+    return ((qs[byte_off] >> shift) | (qs[byte_off + 1] << (8 - shift))) & 0x7;
+}
+
+static __device__ __forceinline__ float vec_dot_rq3_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_rq3 * bq3 = (const block_rq3 *) vbq + kbx;
+
+    // Float codebook dot product: 3-bit indices -> rq3_codebook_gpu[8] -> float accumulator
+    float sumi = 0.0f;
+
+#pragma unroll
+    for (int l = 0; l < VDR_RQ3_Q8_1_MMVQ; ++l) {
+        // Each iteration handles 4 elements (iqs selects the group of 4)
+        const int base = (iqs + l) * 4;
+        for (int k = 0; k < 4; ++k) {
+            const uint8_t idx = rq3_extract(bq3->qs, base + k);
+            const int8_t q8 = ((const int8_t *)bq8_1->qs)[base + k];
+            sumi += rq3_codebook_gpu[idx] * (float)q8;
+        }
+    }
+
+    const float d = __half2float(bq3->d) * __low2float(bq8_1->ds);
     return d * sumi;
 }
 

@@ -601,18 +601,28 @@ static void dequantize_row_iq4_nl_cuda(const void * vx, dst_t * y, const int64_t
 
 template<typename dst_t>
 static __global__ void dequantize_block_rq4(const void * __restrict__ vx, dst_t * __restrict__ yy) {
+    // RQ4 packs consecutive pairs: byte j = (element_{2j+1} << 4) | element_{2j}
+    // This differs from Q4_0 which packs lo-block/hi-block: byte j = (element_{j+16} << 4) | element_j
     const int64_t i   = blockIdx.x;
     const block_rq4 * x = (const block_rq4 *) vx + i*(QK_K/QK_RQ4);
 
     const int64_t tid = threadIdx.x;
     const int64_t il = tid/8;
     const int64_t ib = tid%8;
-    dst_t * y = yy + i*QK_K + 32*ib + 4*il;
+    // Each byte holds two consecutive elements: lo nibble = element 2j, hi nibble = element 2j+1
+    // Thread il handles 4 bytes (qs[4*il..4*il+3]), producing 8 consecutive output elements
+    dst_t * y = yy + i*QK_K + 32*ib + 8*il;
     const uint8_t * q4 = x[ib].qs + 4*il;
     const float d = (float)x[ib].d;
+    static constexpr float cb[16] = {
+        -0.12281943f, -0.08296703f, -0.06342665f, -0.04873108f,
+        -0.03634204f, -0.02524078f, -0.01488395f, -0.00492020f,
+         0.00492020f,  0.01488395f,  0.02524078f,  0.03634204f,
+         0.04873108f,  0.06342665f,  0.08296703f,  0.12281943f,
+    };
     for (int j = 0; j < 4; ++j) {
-        y[j+ 0] = d * kvalues_rq4[q4[j] & 0xf];
-        y[j+16] = d * kvalues_rq4[q4[j] >>  4];
+        y[j*2 + 0] = d * cb[q4[j] & 0xf];
+        y[j*2 + 1] = d * cb[q4[j] >>  4];
     }
 }
 
@@ -620,6 +630,49 @@ template<typename dst_t>
 static void dequantize_row_rq4_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
     const int nb = (k + QK_K - 1) / QK_K;
     dequantize_block_rq4<<<nb, 32, 0, stream>>>(vx, y);
+}
+
+// RQ3 dequant: 3-bit packed indices, 32 elements per block, 14 bytes per block
+template<typename dst_t>
+static __global__ void dequantize_block_rq3(const void * __restrict__ vx, dst_t * __restrict__ yy) {
+    // Each grid block handles QK_K=256 elements = 8 RQ3 blocks of 32
+    const int64_t i   = blockIdx.x;
+    const block_rq3 * x = (const block_rq3 *) vx + i * (QK_K / QK_RQ3);
+
+    const int64_t tid = threadIdx.x;
+    const int64_t ib = tid % 8;   // which of the 8 RQ3 blocks in this super-block
+    const int64_t ie = tid / 8;   // which group of 8 elements (0-3, 4 threads per block of 32)
+
+    dst_t * y = yy + i * QK_K + 32 * ib + 8 * ie;
+    const float d = (float)x[ib].d;
+    const uint8_t * qs = x[ib].qs;
+
+    static constexpr float cb[8] = {
+        -0.10289294f, -0.05607887f, -0.03079141f, -0.00990207f,
+         0.00990207f,  0.03079141f,  0.05607887f,  0.10289294f,
+    };
+
+    // Extract 8 consecutive 3-bit indices starting at element ie*8
+    #pragma unroll
+    for (int j = 0; j < 8; ++j) {
+        const int elem = ie * 8 + j;
+        const int bit_off = elem * 3;
+        const int byte_off = bit_off >> 3;
+        const int shift = bit_off & 7;
+        uint8_t idx;
+        if (shift <= 5) {
+            idx = (qs[byte_off] >> shift) & 0x7;
+        } else {
+            idx = ((qs[byte_off] >> shift) | (qs[byte_off + 1] << (8 - shift))) & 0x7;
+        }
+        y[j] = d * cb[idx];
+    }
+}
+
+template<typename dst_t>
+static void dequantize_row_rq3_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    const int nb = (k + QK_K - 1) / QK_K;
+    dequantize_block_rq3<<<nb, 32, 0, stream>>>(vx, y);
 }
 
 template<typename dst_t>
@@ -775,6 +828,8 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_iq4_xs_cuda;
         case GGML_TYPE_RQ4:
             return dequantize_row_rq4_cuda;
+        case GGML_TYPE_RQ3:
+            return dequantize_row_rq3_cuda;
         case GGML_TYPE_IQ3_S:
             return dequantize_row_iq3_s_cuda;
         case GGML_TYPE_MXFP4:
@@ -830,6 +885,8 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_iq4_xs_cuda;
         case GGML_TYPE_RQ4:
             return dequantize_row_rq4_cuda;
+        case GGML_TYPE_RQ3:
+            return dequantize_row_rq3_cuda;
         case GGML_TYPE_IQ3_S:
             return dequantize_row_iq3_s_cuda;
         case GGML_TYPE_MXFP4:

@@ -460,6 +460,80 @@ void quantize_row_rq4_ref(const float * GGML_RESTRICT x, block_rq4 * GGML_RESTRI
     }
 }
 
+// RotorQ 3-bit codebook: precomputed from Beta(127.5, 127.5) on [-1,1], 8 centroids, dim=256
+static const float rq3_codebook[8] = {
+    -0.10289294f, -0.05607887f, -0.03079141f, -0.00990207f,
+     0.00990207f,  0.03079141f,  0.05607887f,  0.10289294f,
+};
+
+// Extract a 3-bit index from a bit-packed array
+static inline uint8_t rq3_get_index(const uint8_t * qs, int i) {
+    const int bit_off = i * 3;
+    const int byte_off = bit_off >> 3;
+    const int shift = bit_off & 7;
+    if (shift <= 5) {
+        return (qs[byte_off] >> shift) & 0x7;
+    }
+    return ((qs[byte_off] >> shift) | (qs[byte_off + 1] << (8 - shift))) & 0x7;
+}
+
+// Pack a 3-bit index into a bit-packed array
+static inline void rq3_set_index(uint8_t * qs, int i, uint8_t val) {
+    const int bit_off = i * 3;
+    const int byte_off = bit_off >> 3;
+    const int shift = bit_off & 7;
+    val &= 0x7;
+    qs[byte_off] &= ~(0x7 << shift);
+    qs[byte_off] |= val << shift;
+    if (shift > 5) {
+        qs[byte_off + 1] &= ~(0x7 >> (8 - shift));
+        qs[byte_off + 1] |= val >> (8 - shift);
+    }
+}
+
+void dequantize_row_rq3(const block_rq3 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_RQ3;
+    assert(k % qk == 0);
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);
+        for (int j = 0; j < qk; j++) {
+            const uint8_t idx = rq3_get_index(x[i].qs, j);
+            y[i * qk + j] = rq3_codebook[idx] * d;
+        }
+    }
+}
+
+void quantize_row_rq3_ref(const float * GGML_RESTRICT x, block_rq3 * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_RQ3;
+    assert(k % qk == 0);
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        float amax = 0.0f;
+        for (int j = 0; j < qk; j++) {
+            float ax = fabsf(x[i * qk + j]);
+            if (ax > amax) amax = ax;
+        }
+        const float d = amax / rq3_codebook[7];  // max centroid
+        y[i].d = GGML_FP32_TO_FP16(d);
+        const float inv_d = (d > 1e-10f) ? 1.0f / d : 0.0f;
+
+        memset(y[i].qs, 0, 12);
+        for (int j = 0; j < qk; j++) {
+            const float v = x[i * qk + j] * inv_d;
+            uint8_t best_idx = 0;
+            float best_dist = 1e10f;
+            for (int c = 0; c < 8; c++) {
+                float dist = fabsf(v - rq3_codebook[c]);
+                if (dist < best_dist) { best_dist = dist; best_idx = (uint8_t)c; }
+            }
+            rq3_set_index(y[i].qs, j, best_idx);
+        }
+    }
+}
+
 void dequantize_row_q4_0(const block_q4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK4_0;
 
@@ -5538,6 +5612,16 @@ bool ggml_validate_row_data(enum ggml_type type, const void * data, size_t nbyte
         case GGML_TYPE_IQ4_NL:
             {
                 VALIDATE_ROW_DATA_D_F16_IMPL(block_iq4_nl, data, nb);
+            } break;
+
+        case GGML_TYPE_RQ4:
+            {
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_rq4, data, nb);
+            } break;
+
+        case GGML_TYPE_RQ3:
+            {
+                VALIDATE_ROW_DATA_D_F16_IMPL(block_rq3, data, nb);
             } break;
 
         case GGML_TYPE_I8:
