@@ -181,6 +181,19 @@ typedef struct {
 } block_q1_0;
 static_assert(sizeof(block_q1_0) == sizeof(ggml_half) + QK1_0 / 8, "wrong q1_0 block size/padding");
 
+// RotorQ 4-bit: TurboQuant codebook quantization with rotation
+// Same block layout as IQ4_NL (32 weights per block, 4-bit packed)
+// but uses a different codebook from Beta((d-1)/2,(d-1)/2) distribution
+// The rotation is applied to weights before quantization (offline)
+#define QK_RQ4 32
+#define QI_RQ4 (QK_RQ4 / (4 * 2))  // same as QI4_NL
+#define QR_RQ4 2  // same as QR4_NL
+typedef struct {
+    ggml_half d;               // block scale
+    uint8_t qs[QK_RQ4 / 2];   // 4-bit packed indices (2 per byte), 16 bytes
+} block_rq4;
+static_assert(sizeof(block_rq4) == sizeof(ggml_half) + QK_RQ4 / 2, "wrong rq4 block size/padding");
+
 #define QK4_0 32
 typedef struct {
     ggml_half d;           // delta
@@ -1109,6 +1122,11 @@ GGML_TABLE_END()
 // TODO: fix name to kvalues_iq4_nl
 GGML_TABLE_BEGIN(int8_t, kvalues_iq4nl, 16)
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
+GGML_TABLE_END()
+
+// RotorQ 4-bit codebook: TurboQuant Beta((255)/2,(255)/2) optimal centroids
+GGML_TABLE_BEGIN(int8_t, kvalues_rq4, 16)
+    -127, -86, -66, -50, -38, -26, -15, -5, 5, 15, 26, 38, 50, 66, 86, 127,
 GGML_TABLE_END()
 
 // e2m1 values (doubled)

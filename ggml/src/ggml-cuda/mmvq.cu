@@ -29,6 +29,7 @@ static constexpr __device__ vec_dot_q_cuda_t get_vec_dot_q_cuda(ggml_type type) 
         case GGML_TYPE_IQ1_M:   return vec_dot_iq1_m_q8_1;
         case GGML_TYPE_IQ4_NL:  return vec_dot_iq4_nl_q8_1;
         case GGML_TYPE_IQ4_XS:  return vec_dot_iq4_xs_q8_1;
+        case GGML_TYPE_RQ4:     return vec_dot_rq4_q8_1;
         case GGML_TYPE_IQ3_S:   return vec_dot_iq3_s_q8_1;
         default:                return nullptr;
     }
@@ -55,6 +56,7 @@ static constexpr __host__ __device__ int get_vdr_mmvq(ggml_type type) {
         case GGML_TYPE_IQ3_S:   return VDR_IQ3_S_Q8_1_MMVQ;
         case GGML_TYPE_IQ4_NL:  return VDR_IQ4_NL_Q8_1_MMVQ;
         case GGML_TYPE_IQ4_XS:  return VDR_IQ4_XS_Q8_1_MMVQ;
+        case GGML_TYPE_RQ4:     return VDR_RQ4_Q8_1_MMVQ;
         default:                return 1;
     }
 }
@@ -112,6 +114,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_pascal_older(gg
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_IQ4_NL:  return 6;
         case GGML_TYPE_IQ4_XS:  return 5;
+        case GGML_TYPE_RQ4:     return 6;
         case GGML_TYPE_MXFP4:   return 4;
         case GGML_TYPE_Q2_K:    return 4;
         case GGML_TYPE_Q3_K:    return 4;
@@ -150,6 +153,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_gcn(ggml_type t
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_IQ4_NL:  return 6;
         case GGML_TYPE_IQ4_XS:  return 4;
+        case GGML_TYPE_RQ4:     return 6;
         case GGML_TYPE_Q2_K:    return 4;
         case GGML_TYPE_Q3_K:    return 4;
         case GGML_TYPE_Q4_0:    return 5;
@@ -200,6 +204,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna3(ggml_type
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_IQ4_NL:  return 6;
         case GGML_TYPE_IQ4_XS:  return 6;
+        case GGML_TYPE_RQ4:     return 6;
         case GGML_TYPE_Q4_K:    return 4;
         case GGML_TYPE_Q5_K:    return 4;
         case GGML_TYPE_Q6_K:    return 4;
@@ -218,6 +223,7 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type
         case GGML_TYPE_IQ3_XXS: return 4;
         case GGML_TYPE_IQ4_NL:  return 7;
         case GGML_TYPE_IQ4_XS:  return 5;
+        case GGML_TYPE_RQ4:     return 6;
         case GGML_TYPE_MXFP4:   return 5;
         case GGML_TYPE_Q3_K:    return 4;
         case GGML_TYPE_Q4_0:    return 7;

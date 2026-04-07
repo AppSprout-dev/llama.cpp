@@ -394,6 +394,72 @@ void dequantize_row_q1_0(const block_q1_0 * GGML_RESTRICT x, float * GGML_RESTRI
     }
 }
 
+// RotorQ 4-bit codebook: precomputed from Beta(127.5, 127.5) on [-1,1], 16 centroids
+static const float rq4_codebook[16] = {
+    -0.12281943f, -0.08296703f, -0.06342665f, -0.04873108f,
+    -0.03634204f, -0.02524078f, -0.01488395f, -0.00492020f,
+     0.00492020f,  0.01488395f,  0.02524078f,  0.03634204f,
+     0.04873108f,  0.06342665f,  0.08296703f,  0.12281943f,
+};
+
+void dequantize_row_rq4(const block_rq4 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_RQ4;
+    assert(k % qk == 0);
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        const float d = GGML_FP16_TO_FP32(x[i].d);  // block scale
+
+        for (int j = 0; j < qk / 2; j++) {
+            const uint8_t packed = x[i].qs[j];
+            const uint8_t idx_lo = packed & 0x0F;
+            const uint8_t idx_hi = (packed >> 4) & 0x0F;
+
+            y[i*qk + j*2 + 0] = rq4_codebook[idx_lo] * d;
+            y[i*qk + j*2 + 1] = rq4_codebook[idx_hi] * d;
+        }
+    }
+}
+
+void quantize_row_rq4_ref(const float * GGML_RESTRICT x, block_rq4 * GGML_RESTRICT y, int64_t k) {
+    static const int qk = QK_RQ4;
+    assert(k % qk == 0);
+    const int nb = k / qk;
+
+    for (int i = 0; i < nb; i++) {
+        // Find absmax for scale (same as IQ4_NL approach)
+        float amax = 0.0f;
+        for (int j = 0; j < qk; j++) {
+            float ax = fabsf(x[i*qk + j]);
+            if (ax > amax) amax = ax;
+        }
+        // Scale so that codebook[-127..127] maps to [-amax..amax]
+        // codebook max abs value is 127 in int8, which maps to rq4_codebook[0] = -0.12282
+        const float d = amax / rq4_codebook[15];  // rq4_codebook[15] = 0.12282 (max positive)
+        y[i].d = GGML_FP32_TO_FP16(d);
+
+        const float inv_d = (d > 1e-10f) ? 1.0f / d : 0.0f;
+
+        // Quantize: find nearest codebook entry for each element
+        for (int j = 0; j < qk / 2; j++) {
+            const float v0 = x[i*qk + j*2 + 0] * inv_d;
+            const float v1 = x[i*qk + j*2 + 1] * inv_d;
+
+            // Linear search for nearest codebook entry (only 16 entries)
+            uint8_t idx0 = 0, idx1 = 0;
+            float best0 = 1e10f, best1 = 1e10f;
+            for (int c = 0; c < 16; c++) {
+                float d0 = fabsf(v0 - rq4_codebook[c]);
+                float d1 = fabsf(v1 - rq4_codebook[c]);
+                if (d0 < best0) { best0 = d0; idx0 = (uint8_t)c; }
+                if (d1 < best1) { best1 = d1; idx1 = (uint8_t)c; }
+            }
+
+            y[i].qs[j] = idx0 | (idx1 << 4);
+        }
+    }
+}
+
 void dequantize_row_q4_0(const block_q4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK4_0;
 

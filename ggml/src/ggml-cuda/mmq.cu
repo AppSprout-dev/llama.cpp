@@ -65,6 +65,9 @@ static void ggml_cuda_mul_mat_q_switch_type(ggml_backend_cuda_context & ctx, con
         case GGML_TYPE_IQ4_NL:
             mul_mat_q_case<GGML_TYPE_IQ4_NL>(ctx, args, stream);
             break;
+        case GGML_TYPE_RQ4:
+            mul_mat_q_case<GGML_TYPE_RQ4>(ctx, args, stream);
+            break;
         default:
             GGML_ABORT("fatal error");
             break;
@@ -290,6 +293,7 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
         case GGML_TYPE_IQ1_S:
         case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_RQ4:
             mmq_supported = true;
             break;
         default:
