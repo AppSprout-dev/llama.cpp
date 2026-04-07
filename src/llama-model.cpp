@@ -1286,6 +1286,10 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     case 42: type = LLM_TYPE_E4B; break; // to confirm: E4B or E5B?
                     default: type = LLM_TYPE_UNKNOWN;
                 }
+
+                // Optional spoke adapter (Felix-LM architecture)
+                ml.get_key(LLM_KV_SPOKE_COUNT, hparams.n_spokes, false);
+                ml.get_key(LLM_KV_SPOKE_RANK,  hparams.spoke_rank, false);
             } break;
         case LLM_ARCH_GEMMA_EMBEDDING:
             {
@@ -4361,6 +4365,21 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                             layer.per_layer_inp_gate   = create_tensor(tn(LLM_TENSOR_PER_LAYER_INP_GATE,  "weight", i), {n_embd, n_embd_per_layer}, 0);
                             layer.per_layer_proj       = create_tensor(tn(LLM_TENSOR_PER_LAYER_PROJ,      "weight", i), {n_embd_per_layer, n_embd}, 0);
                             layer.per_layer_post_norm  = create_tensor(tn(LLM_TENSOR_PER_LAYER_POST_NORM, "weight", i), {n_embd}, 0);
+                        }
+
+                        // Optional spoke adapter (Felix-LM architecture)
+                        const uint32_t n_spoke = hparams.n_spokes;
+                        const uint32_t spoke_rank_i = hparams.spoke_rank;
+                        if (n_spoke > 0) {
+                            layer.spoke_norm      = create_tensor(tn(LLM_TENSOR_SPOKE_NORM,   "weight",    i), {n_embd}, TENSOR_NOT_REQUIRED);
+                            layer.spoke_gate_bias = create_tensor(tn(LLM_TENSOR_SPOKE_GATE,   "gate_bias", i), {1},      TENSOR_NOT_REQUIRED);
+
+                            if (layer.spoke_norm) {
+                                for (int s = 0; s < (int) n_spoke; ++s) {
+                                    layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
+                                    layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                                }
+                            }
                         }
                     }
                 } break;

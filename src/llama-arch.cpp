@@ -1393,6 +1393,10 @@ static std::set<llm_tensor> llm_get_tensor_names(llm_arch arch) {
                 LLM_TENSOR_PER_LAYER_INP_GATE,
                 LLM_TENSOR_PER_LAYER_PROJ,
                 LLM_TENSOR_PER_LAYER_POST_NORM,
+                LLM_TENSOR_SPOKE_NORM,
+                LLM_TENSOR_SPOKE_GATE,
+                LLM_TENSOR_SPOKE_W_DOWN,
+                LLM_TENSOR_SPOKE_W_UP,
             };
         case LLM_ARCH_GEMMA_EMBEDDING:
             return {
