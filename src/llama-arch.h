@@ -560,6 +560,8 @@ enum llm_tensor {
     LLM_TENSOR_SPOKE_GATE,
     LLM_TENSOR_SPOKE_W_DOWN,
     LLM_TENSOR_SPOKE_W_UP,
+    LLM_TENSOR_SPOKE_W_DOWN_FUSED,
+    LLM_TENSOR_SPOKE_W_UP_FUSED,
 };
 
 enum llm_tensor_layer {

@@ -218,7 +218,7 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
             cb(cur, "out_scaled", il);
         }
 
-        // --- Optional spoke: gated low-rank projections (Felix-LM adapter) ---
+        // --- Optional spoke: fused gated low-rank projections (Felix-LM adapter) ---
         if (model.layers[il].spoke_norm) {
             const int n_spokes = hparams.n_spokes;
 
@@ -229,17 +229,26 @@ llm_build_gemma4_iswa::llm_build_gemma4_iswa(const llama_model & model, const ll
             cb(h_norm, "spoke_norm", il);
 
             // Compute spoke projections: SiLU(h_norm @ w_down) @ w_up, then mean
-            ggml_tensor * spoke_sum = nullptr;
-            for (int s = 0; s < n_spokes; ++s) {
-                ggml_tensor * down = ggml_mul_mat(ctx0, model.layers[il].spoke_w_down[s], h_norm);
+            ggml_tensor * spoke_mean = nullptr;
+            if (model.layers[il].spoke_w_down_fused) {
+                // Fused path: 2 matmuls instead of 2*n_spokes
+                // sum_s(SiLU(h @ w_down[s]) @ w_up[s]) = SiLU(h @ w_down_fused) @ w_up_fused
+                ggml_tensor * down = ggml_mul_mat(ctx0, model.layers[il].spoke_w_down_fused, h_norm);
                 ggml_tensor * act  = ggml_silu(ctx0, down);
-                ggml_tensor * up   = ggml_mul_mat(ctx0, model.layers[il].spoke_w_up[s], act);
+                ggml_tensor * up   = ggml_mul_mat(ctx0, model.layers[il].spoke_w_up_fused, act);
+                spoke_mean = ggml_scale(ctx0, up, 1.0f / n_spokes);
+            } else {
+                // Legacy path: individual spoke matmuls
+                ggml_tensor * spoke_sum = nullptr;
+                for (int s = 0; s < n_spokes; ++s) {
+                    ggml_tensor * down = ggml_mul_mat(ctx0, model.layers[il].spoke_w_down[s], h_norm);
+                    ggml_tensor * act  = ggml_silu(ctx0, down);
+                    ggml_tensor * up   = ggml_mul_mat(ctx0, model.layers[il].spoke_w_up[s], act);
 
-                spoke_sum = spoke_sum ? ggml_add(ctx0, spoke_sum, up) : up;
+                    spoke_sum = spoke_sum ? ggml_add(ctx0, spoke_sum, up) : up;
+                }
+                spoke_mean = ggml_scale(ctx0, spoke_sum, 1.0f / n_spokes);
             }
-
-            // Mean over spokes
-            ggml_tensor * spoke_mean = ggml_scale(ctx0, spoke_sum, 1.0f / n_spokes);
 
             // Gated residual: h = h + sigmoid(gate_bias) * mean_update
             ggml_tensor * gate_f32 = ggml_cast(ctx0, model.layers[il].spoke_gate_bias, GGML_TYPE_F32);

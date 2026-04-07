@@ -485,6 +485,10 @@ struct llama_layer {
     struct ggml_tensor * spoke_gate_bias  = nullptr;
     struct ggml_tensor * spoke_w_down[4]  = {nullptr, nullptr, nullptr, nullptr};
     struct ggml_tensor * spoke_w_up[4]    = {nullptr, nullptr, nullptr, nullptr};
+    // fused spoke matrices (pre-concatenated for fewer kernel launches)
+    // w_down_fused: [n_embd, rank*n_spokes], w_up_fused: [rank*n_spokes, n_embd]
+    struct ggml_tensor * spoke_w_down_fused = nullptr;
+    struct ggml_tensor * spoke_w_up_fused   = nullptr;
 
     // DSA (deepseek sparse attention)
     struct ggml_tensor * indexer_k_norm   = nullptr;

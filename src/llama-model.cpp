@@ -4375,9 +4375,16 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                             layer.spoke_gate_bias = create_tensor(tn(LLM_TENSOR_SPOKE_GATE,   "gate_bias", i), {1},      TENSOR_NOT_REQUIRED);
 
                             if (layer.spoke_norm) {
-                                for (int s = 0; s < (int) n_spoke; ++s) {
-                                    layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
-                                    layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                                // Try fused tensors first (fewer kernel launches)
+                                layer.spoke_w_down_fused = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN_FUSED, "weight", i), {n_embd, n_spoke * spoke_rank_i}, TENSOR_NOT_REQUIRED);
+                                layer.spoke_w_up_fused   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP_FUSED,   "weight", i), {n_spoke * spoke_rank_i, n_embd}, TENSOR_NOT_REQUIRED);
+
+                                // Fall back to individual spoke tensors if fused not present
+                                if (!layer.spoke_w_down_fused) {
+                                    for (int s = 0; s < (int) n_spoke; ++s) {
+                                        layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
+                                        layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                                    }
                                 }
                             }
                         }
@@ -7316,9 +7323,16 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                         layer.spoke_norm      = create_tensor(tn(LLM_TENSOR_SPOKE_NORM, "weight", i), {n_embd}, 0);
                         layer.spoke_gate_bias = create_tensor(tn(LLM_TENSOR_SPOKE_GATE, "gate_bias", i), {1}, 0);
 
-                        for (int s = 0; s < (int) n_spoke; ++s) {
-                            layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
-                            layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                        // Try fused tensors first (fewer kernel launches)
+                        layer.spoke_w_down_fused = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN_FUSED, "weight", i), {n_embd, n_spoke * spoke_rank_i}, TENSOR_NOT_REQUIRED);
+                        layer.spoke_w_up_fused   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP_FUSED,   "weight", i), {n_spoke * spoke_rank_i, n_embd}, TENSOR_NOT_REQUIRED);
+
+                        // Fall back to individual spoke tensors if fused not present
+                        if (!layer.spoke_w_down_fused) {
+                            for (int s = 0; s < (int) n_spoke; ++s) {
+                                layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
+                                layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                            }
                         }
                     }
                 } break;
@@ -7572,9 +7586,16 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                             layer.spoke_gate_bias = create_tensor(tn(LLM_TENSOR_SPOKE_GATE,   "gate_bias", i), {1},      TENSOR_NOT_REQUIRED);
 
                             if (layer.spoke_norm) {
-                                for (int s = 0; s < (int) n_spoke; ++s) {
-                                    layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
-                                    layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                                // Try fused tensors first (fewer kernel launches)
+                                layer.spoke_w_down_fused = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN_FUSED, "weight", i), {n_embd, n_spoke * spoke_rank_i}, TENSOR_NOT_REQUIRED);
+                                layer.spoke_w_up_fused   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP_FUSED,   "weight", i), {n_spoke * spoke_rank_i, n_embd}, TENSOR_NOT_REQUIRED);
+
+                                // Fall back to individual spoke tensors if fused not present
+                                if (!layer.spoke_w_down_fused) {
+                                    for (int s = 0; s < (int) n_spoke; ++s) {
+                                        layer.spoke_w_down[s] = create_tensor(tn(LLM_TENSOR_SPOKE_W_DOWN, "weight", i, s), {n_embd, spoke_rank_i}, 0);
+                                        layer.spoke_w_up[s]   = create_tensor(tn(LLM_TENSOR_SPOKE_W_UP,   "weight", i, s), {spoke_rank_i, n_embd}, 0);
+                                    }
                                 }
                             }
                         }

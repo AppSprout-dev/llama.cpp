@@ -102,17 +102,25 @@ llm_build_felix::llm_build_felix(const llama_model & model, const llm_graph_para
             cb(h_norm, "spoke_norm", il);
 
             // Compute spoke projections: SiLU(h_norm @ w_down) @ w_up, then mean
-            ggml_tensor * spoke_sum = nullptr;
-            for (int s = 0; s < n_spokes; ++s) {
-                ggml_tensor * down = ggml_mul_mat(ctx0, model.layers[il].spoke_w_down[s], h_norm);
+            ggml_tensor * spoke_mean = nullptr;
+            if (model.layers[il].spoke_w_down_fused) {
+                // Fused path: 2 matmuls instead of 2*n_spokes
+                ggml_tensor * down = ggml_mul_mat(ctx0, model.layers[il].spoke_w_down_fused, h_norm);
                 ggml_tensor * act  = ggml_silu(ctx0, down);
-                ggml_tensor * up   = ggml_mul_mat(ctx0, model.layers[il].spoke_w_up[s], act);
+                ggml_tensor * up   = ggml_mul_mat(ctx0, model.layers[il].spoke_w_up_fused, act);
+                spoke_mean = ggml_scale(ctx0, up, 1.0f / n_spokes);
+            } else {
+                // Legacy path: individual spoke matmuls
+                ggml_tensor * spoke_sum = nullptr;
+                for (int s = 0; s < n_spokes; ++s) {
+                    ggml_tensor * down = ggml_mul_mat(ctx0, model.layers[il].spoke_w_down[s], h_norm);
+                    ggml_tensor * act  = ggml_silu(ctx0, down);
+                    ggml_tensor * up   = ggml_mul_mat(ctx0, model.layers[il].spoke_w_up[s], act);
 
-                spoke_sum = spoke_sum ? ggml_add(ctx0, spoke_sum, up) : up;
+                    spoke_sum = spoke_sum ? ggml_add(ctx0, spoke_sum, up) : up;
+                }
+                spoke_mean = ggml_scale(ctx0, spoke_sum, 1.0f / n_spokes);
             }
-
-            // Mean over spokes
-            ggml_tensor * spoke_mean = ggml_scale(ctx0, spoke_sum, 1.0f / n_spokes);
 
             // Gated residual: h = h + sigmoid(gate_bias) * mean_update
             // Cast gate_bias from F16 to F32 to match computation precision
