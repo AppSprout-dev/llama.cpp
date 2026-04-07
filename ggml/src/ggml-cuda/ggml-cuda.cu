@@ -2253,10 +2253,12 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
     bool use_mul_mat_f     = !ggml_is_quantized(src0->type)
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
-    bool use_mul_mat_vec_q = ggml_is_quantized(src0->type) && !bad_padding_clear
+    // RQ4: bypass mmq/mmvq kernels, use dequant→cublas path (mmq kernel needs debugging)
+    const bool is_rq4 = src0->type == GGML_TYPE_RQ4;
+    bool use_mul_mat_vec_q = ggml_is_quantized(src0->type) && !bad_padding_clear && !is_rq4
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
         && src1->ne[1] <= MMVQ_MAX_BATCH_SIZE;
-    bool use_mul_mat_q     = ggml_is_quantized(src0->type) && !bad_padding_clear
+    bool use_mul_mat_q     = ggml_is_quantized(src0->type) && !bad_padding_clear && !is_rq4
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
 
     bool any_gpus_with_slow_fp16 = false;
@@ -4807,6 +4809,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ3_XXS:
                     case GGML_TYPE_IQ4_NL:
                     case GGML_TYPE_IQ4_XS:
+                    case GGML_TYPE_RQ4:
                     case GGML_TYPE_BF16:
                         return true;
                     default:
