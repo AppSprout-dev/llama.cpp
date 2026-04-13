@@ -368,11 +368,15 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
                 case GGML_TYPE_Q4_K:
                 case GGML_TYPE_Q6_K:
                 case GGML_TYPE_IQ4_NL:
+                case GGML_TYPE_RQ4:
                     return 8;
                 default:
                     return 1;
             }
         }
+        // NOTE: ncols_dst=2 (Gemma 4 decode) tested with nwarps=1,4,8 for RQ4.
+        // All identical at 101 tok/s — kernel compute is not the bottleneck.
+        // The bottleneck is fixed overhead (dispatch gaps, non-matmul ops, CPU graph eval).
         return 1;
     }
     return 1;
@@ -1042,6 +1046,118 @@ static void mul_mat_vec_q_switch_type(
     }
 }
 
+// Fused RQ4 kernel with shared-memory Q8_1 quantization.
+// Reads F32 activations, cooperatively quantizes to Q8_1 in shared memory,
+// then uses the fast dp4a integer dot product — best of both worlds:
+// eliminates the quantize_q8_1 dispatch + gap while keeping the SIMD compute path.
+//
+// Processes ROWS_PER_BLOCK rows per block to amortize quantization cost.
+// Each block quantizes the activation vector once, then dots against multiple weight rows.
+//
+// Shared memory layout: [Q8_1 blocks (blocks_per_row * 36B)] [reduction floats]
+// Max smem for Gemma 4 E2B down projection (12288 cols): ~16KB — well within 64KB LDS.
+static constexpr int RQ4_SMEM_NWARPS = 8;
+static constexpr int RQ4_SMEM_WARP_SIZE = 32;
+static constexpr int RQ4_SMEM_ROWS_PER_BLOCK = 8;
+
+__launch_bounds__(RQ4_SMEM_NWARPS * RQ4_SMEM_WARP_SIZE, 1)
+static __global__ void mul_mat_vec_rq4_smem(
+        const void * __restrict__ vx, const float * __restrict__ vy, float * __restrict__ dst,
+        const uint32_t ncols_x, const uint32_t nrows_x,
+        const uint32_t stride_row_x,
+        const uint32_t stride_col_y, const uint32_t stride_col_dst) {
+
+    constexpr int warp_size = RQ4_SMEM_WARP_SIZE;
+    constexpr int nwarps = RQ4_SMEM_NWARPS;
+    constexpr int rows_per_block = RQ4_SMEM_ROWS_PER_BLOCK;
+    constexpr int qk  = QK_RQ4;   // 32 (= QK8_1)
+    constexpr int qi  = QI_RQ4;   // 4
+    constexpr int vdr = VDR_RQ4_Q8_1_MMVQ; // 2
+
+    const int tid = warp_size * threadIdx.y + threadIdx.x;
+    const int row0 = rows_per_block * (int)blockIdx.x;
+
+    const int blocks_per_row = ncols_x / qk;
+    constexpr int blocks_per_iter = vdr * nwarps * warp_size / qi;
+
+    // Shared memory: Q8_1 quantized activations followed by reduction buffer
+    extern __shared__ char smem_raw[];
+    block_q8_1 * smem_q8 = (block_q8_1 *) smem_raw;
+
+    // --- Phase 1: Cooperative F32 -> Q8_1 quantization into shared memory ---
+    // Each warp quantizes one block per iteration (32 threads = 32 elements = 1 Q8_1 block).
+    // With 8 warps, we process 8 blocks in parallel. Quantize once, use for all rows.
+    const float * y_f32 = vy + blockIdx.y * stride_col_y;
+
+    for (int b = (int)threadIdx.y; b < blocks_per_row; b += nwarps) {
+        const float xi = y_f32[b * qk + threadIdx.x];
+
+        float amax = warp_reduce_max<qk>(fabsf(xi));
+        float sum  = warp_reduce_sum<qk>(xi);
+
+        const float d = amax / 127.0f;
+        const int8_t q = (amax == 0.0f) ? (int8_t)0 : (int8_t)roundf(xi / d);
+
+        smem_q8[b].qs[threadIdx.x] = q;
+        if (threadIdx.x == 0) {
+            smem_q8[b].ds = make_half2(d, sum);
+        }
+    }
+    __syncthreads();
+
+    // --- Phase 2: dp4a dot product against shared-memory Q8_1, multiple rows ---
+    float tmp[rows_per_block] = {0.0f};
+
+    for (int kbx = tid / (qi/vdr); kbx < blocks_per_row; kbx += blocks_per_iter) {
+        const int kqs = vdr * (tid % (qi/vdr));
+
+#pragma unroll
+        for (int i = 0; i < rows_per_block; ++i) {
+            if (row0 + i < (int)nrows_x) {
+                tmp[i] += vec_dot_rq4_q8_1(vx, &smem_q8[kbx], (row0 + i) * stride_row_x + kbx, kqs);
+            }
+        }
+    }
+
+    // --- Phase 3: Cross-warp reduction ---
+    const int q8_bytes_aligned = (blocks_per_row * (int)sizeof(block_q8_1) + 15) & ~15;
+    float * reduction_base = (float *)(smem_raw + q8_bytes_aligned);
+    // Layout: reduction_base[(nwarps-1) * rows_per_block * warp_size]
+
+    if (threadIdx.y > 0) {
+#pragma unroll
+        for (int i = 0; i < rows_per_block; ++i) {
+            reduction_base[((threadIdx.y - 1) * rows_per_block + i) * warp_size + threadIdx.x] = tmp[i];
+        }
+    }
+    __syncthreads();
+
+    if (threadIdx.y > 0) {
+        return;
+    }
+
+    // Warp 0: accumulate across other warps, then reduce across lanes
+#pragma unroll
+    for (int i = 0; i < rows_per_block; ++i) {
+#pragma unroll
+        for (int w = 0; w < nwarps - 1; ++w) {
+            tmp[i] += reduction_base[(w * rows_per_block + i) * warp_size + threadIdx.x];
+        }
+        tmp[i] = warp_reduce_sum<warp_size>(tmp[i]);
+    }
+
+    // Thread 0 writes results for all rows in this block
+    if (threadIdx.x == 0) {
+        float * dst_col = dst + blockIdx.y * stride_col_dst;
+#pragma unroll
+        for (int i = 0; i < rows_per_block; ++i) {
+            if (row0 + i < (int)nrows_x) {
+                dst_col[row0 + i] = tmp[i];
+            }
+        }
+    }
+}
+
 void ggml_cuda_mul_mat_vec_q(
         ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst,
         const ggml_cuda_mm_fusion_args_host * fusion) {
@@ -1091,6 +1207,37 @@ void ggml_cuda_mul_mat_vec_q(
             fusion_local.gate_bias = fusion->gate_bias->data;
         }
         fusion_local.glu_op = fusion->glu_op;
+    }
+
+    // RQ4 fused smem path: quantize F32→Q8_1 in shared memory, then dp4a dot product.
+    // Eliminates separate quantize_q8_1 dispatch + 14us HIP gap per matmul.
+    // Only for: non-fused, non-MoE, single-token decode.
+    const bool has_fusion = fusion && (fusion->gate || fusion->x_bias || fusion->gate_bias);
+    if (false && src0->type == GGML_TYPE_RQ4 && !has_fusion && !ids && ne12 == 1 && ne13 == 1) {
+        const int64_t nrows_x  = ne01;
+        const int64_t ncols_x  = ne00;
+        const int64_t stride_row = src0->nb[1] / ts_src0;
+        const int64_t ncols_dst_local = ne11;
+        const int64_t stride_col_y_f32 = src1->nb[1] / ts_src1;
+        const int64_t stride_col_dst_f32 = dst->nb[1] / ts_dst;
+
+        // Shared memory: Q8_1 blocks + multi-row reduction buffer
+        const int blocks_per_row = ncols_x / QK_RQ4;
+        const size_t smem_q8       = blocks_per_row * sizeof(block_q8_1);
+        const size_t smem_q8_align = (smem_q8 + 15) & ~(size_t)15;
+        const size_t smem_reduce   = (RQ4_SMEM_NWARPS - 1) * RQ4_SMEM_ROWS_PER_BLOCK * RQ4_SMEM_WARP_SIZE * sizeof(float);
+        const size_t smem_total    = smem_q8_align + smem_reduce;
+
+        const int grid_rows = (nrows_x + RQ4_SMEM_ROWS_PER_BLOCK - 1) / RQ4_SMEM_ROWS_PER_BLOCK;
+        const dim3 block_dims(RQ4_SMEM_WARP_SIZE, RQ4_SMEM_NWARPS, 1);
+        const dim3 grid_dims(grid_rows, ncols_dst_local, 1);
+
+        mul_mat_vec_rq4_smem<<<grid_dims, block_dims, smem_total, stream>>>(
+            src0->data, src1_d, dst_d,
+            ncols_x, nrows_x, stride_row,
+            stride_col_y_f32, stride_col_dst_f32);
+
+        return;
     }
 
     // If src0 is a temporary compute buffer, clear any potential padding.

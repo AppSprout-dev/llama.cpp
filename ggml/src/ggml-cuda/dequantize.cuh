@@ -75,3 +75,28 @@ static __device__ __forceinline__ void dequantize_q8_0(const void * vx, const in
     v.x *= d;
     v.y *= d;
 }
+
+// BetaQ RQ4: 4-bit Beta-distribution codebook, consecutive-pair packing.
+// byte j = (element_{2j+1} << 4) | element_{2j}
+// get_rows template expects lo-block/hi-block output (v.x at iqs, v.y at iqs+16),
+// so we remap: weight[iqs] -> v.x, weight[iqs+16] -> v.y
+static __device__ __forceinline__ void dequantize_rq4(const void * vx, const int64_t ib, const int iqs, float2 & v){
+    const block_rq4 * x = (const block_rq4 *) vx;
+    const float d = __half2float(x[ib].d);
+
+    static constexpr float cb[16] = {
+        -0.12281943f, -0.08296703f, -0.06342665f, -0.04873108f,
+        -0.03634204f, -0.02524078f, -0.01488395f, -0.00492020f,
+         0.00492020f,  0.01488395f,  0.02524078f,  0.03634204f,
+         0.04873108f,  0.06342665f,  0.08296703f,  0.12281943f,
+    };
+
+    // weight[iqs] is in byte iqs/2; weight[iqs+16] is in byte iqs/2 + 8
+    // even iqs -> lo nibble, odd iqs -> hi nibble
+    const int byte_lo = iqs >> 1;
+    const int byte_hi = byte_lo + 8;
+    const int shift   = (iqs & 1) * 4;
+
+    v.x = cb[(x[ib].qs[byte_lo] >> shift) & 0xF] * d;
+    v.y = cb[(x[ib].qs[byte_hi] >> shift) & 0xF] * d;
+}

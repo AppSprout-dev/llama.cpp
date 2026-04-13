@@ -1286,6 +1286,38 @@ static __device__ __forceinline__ float vec_dot_rq4_q8_1(
     return d * (0.12281943f / 127.0f) * sumi;
 }
 
+// RQ4 fused F32 vec_dot: takes F32 activations directly, skipping Q8_1 quantization.
+// kbx_global: global block index into weight tensor (includes row offset)
+// kbx_col:    local column block index (for activation vector offset)
+static __device__ __forceinline__ float vec_dot_rq4_f32(
+    const void * __restrict__ vbq, const float * __restrict__ y,
+    const int & kbx_global, const int & kbx_col, const int & iqs) {
+
+    const block_rq4 * bq4 = (const block_rq4 *) vbq + kbx_global;
+    const float d = __half2float(bq4->d);
+
+    float sumi = 0.0f;
+
+#pragma unroll
+    for (int l = 0; l < VDR_RQ4_Q8_1_MMVQ; ++l) {
+        const uint8_t * qs = bq4->qs + (iqs + l) * 4;
+
+        // Activation offset uses LOCAL column block index, not global
+        const float * yp = y + kbx_col * QK_RQ4 + (iqs + l) * 8;
+
+        sumi += rq4_codebook_gpu[qs[0] & 0xF]        * yp[0];
+        sumi += rq4_codebook_gpu[(qs[0] >> 4) & 0xF]  * yp[1];
+        sumi += rq4_codebook_gpu[qs[1] & 0xF]        * yp[2];
+        sumi += rq4_codebook_gpu[(qs[1] >> 4) & 0xF]  * yp[3];
+        sumi += rq4_codebook_gpu[qs[2] & 0xF]        * yp[4];
+        sumi += rq4_codebook_gpu[(qs[2] >> 4) & 0xF]  * yp[5];
+        sumi += rq4_codebook_gpu[qs[3] & 0xF]        * yp[6];
+        sumi += rq4_codebook_gpu[(qs[3] >> 4) & 0xF]  * yp[7];
+    }
+
+    return d * sumi;
+}
+
 // RQ3: float codebook vec_dot with 3-bit packed indices
 static inline __device__ uint8_t rq3_extract(const uint8_t * qs, int i) {
     int bit_off = i * 3;
