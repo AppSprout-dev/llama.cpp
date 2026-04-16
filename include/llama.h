@@ -574,6 +574,32 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_head_kv  (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_swa      (const struct llama_model * model);
 
+    // SPLICE: Get/set tensor data by name (for hot-swapping spoke weights).
+    // Returns 0 on success, -1 if tensor not found, -2 if size mismatch.
+    LLAMA_API int32_t llama_model_get_tensor_data(
+            const struct llama_model * model,
+            const char               * name,
+            void                     * data,
+            size_t                     offset,
+            size_t                     nbytes);
+
+    LLAMA_API int32_t llama_model_set_tensor_data(
+            struct llama_model * model,
+            const char         * name,
+            const void         * data,
+            size_t               offset,
+            size_t               nbytes);
+
+    // SPLICE: Set tensor data with automatic F32-to-native quantization.
+    // Accepts F32 source data (nelem floats). Quantizes to the tensor's
+    // native type before writing. Returns 0 on success, -1 if not found,
+    // -3 if quantization fails.
+    LLAMA_API int32_t llama_model_set_tensor_data_f32(
+            struct llama_model * model,
+            const char         * name,
+            const float        * data,
+            int64_t              nelem);
+
     // Get the model's RoPE frequency scaling factor
     LLAMA_API float llama_model_rope_freq_scale_train(const struct llama_model * model);
 

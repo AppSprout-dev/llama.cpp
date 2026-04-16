@@ -8347,6 +8347,149 @@ const ggml_tensor * llama_model::get_tensor(const char * name) const {
     return it->second;
 }
 
+int32_t llama_model::get_tensor_data(const char * name, void * data, size_t offset, size_t nbytes) const {
+    auto it = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
+            [name](const std::pair<std::string, ggml_tensor *> & it) {
+                return it.first == name;
+            });
+    if (it == tensors_by_name.end()) {
+        LLAMA_LOG_ERROR("%s: tensor '%s' not found\n", __func__, name);
+        return -1;
+    }
+
+    const ggml_tensor * tensor = it->second;
+    if (offset + nbytes > ggml_nbytes(tensor)) {
+        LLAMA_LOG_ERROR("%s: tensor '%s' size mismatch: offset(%zu) + nbytes(%zu) > tensor(%zu)\n",
+                __func__, name, offset, nbytes, ggml_nbytes(tensor));
+        return -2;
+    }
+
+    ggml_backend_tensor_get(tensor, data, offset, nbytes);
+    return 0;
+}
+
+int32_t llama_model_get_tensor_data(
+        const struct llama_model * model,
+        const char               * name,
+        void                     * data,
+        size_t                     offset,
+        size_t                     nbytes) {
+    return model->get_tensor_data(name, data, offset, nbytes);
+}
+
+int32_t llama_model::set_tensor_data(const char * name, const void * data, size_t offset, size_t nbytes) {
+    auto it = std::find_if(tensors_by_name.begin(), tensors_by_name.end(),
+            [name](const std::pair<std::string, ggml_tensor *> & it) {
+                return it.first == name;
+            });
+    if (it == tensors_by_name.end()) {
+        LLAMA_LOG_ERROR("%s: tensor '%s' not found\n", __func__, name);
+        return -1;
+    }
+
+    ggml_tensor * tensor = it->second;
+    if (offset + nbytes > ggml_nbytes(tensor)) {
+        LLAMA_LOG_ERROR("%s: tensor '%s' size mismatch: offset(%zu) + nbytes(%zu) > tensor(%zu)\n",
+                __func__, name, offset, nbytes, ggml_nbytes(tensor));
+        return -2;
+    }
+
+    ggml_backend_tensor_set(tensor, data, offset, nbytes);
+    return 0;
+}
+
+int32_t llama_model_set_tensor_data(
+        struct llama_model * model,
+        const char         * name,
+        const void         * data,
+        size_t               offset,
+        size_t               nbytes) {
+    return model->set_tensor_data(name, data, offset, nbytes);
+}
+
+int32_t llama_model_set_tensor_data_f32(
+        struct llama_model * model,
+        const char         * name,
+        const float        * data,
+        int64_t              nelem) {
+    // Look up the tensor
+    auto it = std::find_if(model->tensors_by_name.begin(), model->tensors_by_name.end(),
+            [name](const std::pair<std::string, ggml_tensor *> & it) {
+                return it.first == name;
+            });
+    if (it == model->tensors_by_name.end()) {
+        LLAMA_LOG_ERROR("%s: tensor '%s' not found\n", __func__, name);
+        return -1;
+    }
+
+    ggml_tensor * tensor = it->second;
+    const enum ggml_type ttype = tensor->type;
+
+    // If the tensor is already F32, write directly
+    if (ttype == GGML_TYPE_F32) {
+        size_t nbytes = (size_t)nelem * sizeof(float);
+        if (nbytes > ggml_nbytes(tensor)) {
+            LLAMA_LOG_ERROR("%s: tensor '%s' F32 size mismatch\n", __func__, name);
+            return -2;
+        }
+        ggml_backend_tensor_set(tensor, data, 0, nbytes);
+        return 0;
+    }
+
+    // If the tensor is F16, convert and write
+    if (ttype == GGML_TYPE_F16) {
+        std::vector<ggml_fp16_t> buf(nelem);
+        for (int64_t i = 0; i < nelem; i++) {
+            buf[i] = ggml_fp32_to_fp16(data[i]);
+        }
+        size_t nbytes = (size_t)nelem * sizeof(ggml_fp16_t);
+        if (nbytes > ggml_nbytes(tensor)) {
+            LLAMA_LOG_ERROR("%s: tensor '%s' F16 size mismatch\n", __func__, name);
+            return -2;
+        }
+        ggml_backend_tensor_set(tensor, buf.data(), 0, nbytes);
+        return 0;
+    }
+
+    // For quantized types, quantize row-by-row using from_float_ref
+    const auto * traits = ggml_get_type_traits(ttype);
+    if (!traits || !traits->from_float_ref) {
+        LLAMA_LOG_ERROR("%s: tensor '%s' type %s has no from_float_ref\n",
+                __func__, name, ggml_type_name(ttype));
+        return -3;
+    }
+
+    const int64_t nrows = ggml_nrows(tensor);
+    const int64_t n_per_row = nelem / nrows;
+    if (n_per_row * nrows != nelem) {
+        LLAMA_LOG_ERROR("%s: tensor '%s' nelem %lld not divisible by nrows %lld\n",
+                __func__, name, (long long)nelem, (long long)nrows);
+        return -3;
+    }
+
+    const size_t row_size = ggml_row_size(ttype, n_per_row);
+    const size_t total = nrows * row_size;
+    std::vector<uint8_t> qbuf(total);
+
+    for (int64_t row = 0; row < nrows; row++) {
+        traits->from_float_ref(
+                data + row * n_per_row,
+                (void *)(qbuf.data() + row * row_size),
+                n_per_row);
+    }
+
+    if (total != ggml_nbytes(tensor)) {
+        LLAMA_LOG_ERROR("%s: tensor '%s' quantized size %zu != tensor size %zu\n",
+                __func__, name, total, ggml_nbytes(tensor));
+        return -3;
+    }
+
+    ggml_backend_tensor_set(tensor, qbuf.data(), 0, total);
+    LLAMA_LOG_INFO("%s: tensor '%s' set via F32->%s quantization (%zu bytes)\n",
+            __func__, name, ggml_type_name(ttype), total);
+    return 0;
+}
+
 float llama_model::get_rope_freq_base (const llama_cparams & cparams, int il) const {
     return hparams.is_swa(il) ? hparams.rope_freq_base_train_swa : cparams.rope_freq_base;
 }
