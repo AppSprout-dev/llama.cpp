@@ -611,6 +611,10 @@ struct llama_model {
 
     const struct ggml_tensor * get_tensor(const char * name) const;
 
+    // SPLICE: get/set tensor data in-place (for hot-swapping spoke weights)
+    int32_t get_tensor_data(const char * name, void * data, size_t offset, size_t nbytes) const;
+    int32_t set_tensor_data(const char * name, const void * data, size_t offset, size_t nbytes);
+
     float get_rope_freq_base (const llama_cparams & cparams, int il) const;
     float get_rope_freq_scale(const llama_cparams & cparams, int il) const;
 
